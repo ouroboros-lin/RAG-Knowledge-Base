@@ -28,7 +28,7 @@ RAG = 检索增强生成。
 
 ## 二、项目结构
 
-ai-crawler-lab/
+RAG-Knowledge-Base/
   main.py              # FastAPI 入口：/ask + 上传/列表/删除/清空，托管前端
   rag.py               # RAG 链，检索 + 生成
   embeddings.py        # 智谱 Embedding 封装，供 LangChain 使用
@@ -95,7 +95,7 @@ Embedding 和生成回答都用智谱，一把 Key 就够了。
 ### 先启动服务
 
 ```bash
-cd /d D:\PythonProject\ai-crawler-lab
+cd /d D:\...\RAG-Knowledge-Base
 python main.py
 ```
 
