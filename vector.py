@@ -1,45 +1,32 @@
+"""首次初始化：把 data/knowledge/notes.txt 作为种子数据入库。
+
+以前这里是"读死路径的 notes.txt 自己入库"，
+现在只保留一层薄封装，真正的切分和入库逻辑都在 ingest.py 里，
+和网页上传走的是同一套代码。
+
+Key 现在不再放 .env，跑这个脚本时会让你在命令行里输一次。
+
+平时用网页上传就够了，这个文件留着做兼容 / 首次初始化。
+"""
+
+import getpass
 import os
-from dotenv import load_dotenv
-from langchain_community.document_loaders import TextLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from zhipuai import ZhipuAI
 
-load_dotenv()
-client = ZhipuAI(api_key=os.getenv("ZHIPU_API_KEY"))
+from ingest import ingest_file
+from rag import write_fingerprint
 
-# 1. 加载 + 切分
-loader = TextLoader("data/knowledge/notes.txt", encoding="utf-8")
-documents = loader.load()
+SEED_FILE = "data/knowledge/notes.txt"
 
-splitter = RecursiveCharacterTextSplitter(
-    chunk_size=100,
-    chunk_overlap=20,
-    separators=["\n\n", "\n", "。", "，", " ", ""]
-)
-chunks = splitter.split_documents(documents)
-print("切成了", len(chunks), "块")
 
-# 2. 把每块文字变成向量
-def get_embedding(text):
-    resp = client.embeddings.create(
-        model="embedding-2",
-        input=text
-    )
-    return resp.data[0].embedding
-
-# 3. 存进 Chroma
-import chromadb
-
-chroma_client = chromadb.PersistentClient(path="data/chroma_db")
-collection = chroma_client.get_or_create_collection(name="knowledge")
-
-for i, chunk in enumerate(chunks):
-    vec = get_embedding(chunk.page_content)
-    collection.add(
-        ids=[f"chunk_{i}"],
-        documents=[chunk.page_content],
-        embeddings=[vec],
-        metadatas=[chunk.metadata]
-    )
-
-print("已存入向量库，共", collection.count(), "条")
+if __name__ == "__main__":
+    if not os.path.exists(SEED_FILE):
+        print(f"没有找到种子文件 {SEED_FILE}，跳过初始化。")
+    else:
+        api_key = getpass.getpass("请输入智谱 API Key: ").strip()
+        if not api_key:
+            print("没有输入 Key，退出。")
+        else:
+            chunks = ingest_file(SEED_FILE, api_key)
+            # 记下这批向量是哪把 Key 算出来的
+            write_fingerprint(api_key)
+            print(f"已把 {SEED_FILE} 初始化进向量库，共 {chunks} 块")

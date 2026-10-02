@@ -10,6 +10,12 @@ env/
 .idea/
 .vscode/
 
+
+data/
+*.bin
+*.sqlite3
+
+
 # 环境变量与密钥
 .env
 *.key

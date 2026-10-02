@@ -35,11 +35,21 @@
     box-shadow: 0 1px 3px rgba(0,0,0,0.06);
     margin-bottom: 16px;
   }
+  .card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+  .card-title {
+    font-size: 15px;
+    font-weight: 600;
+  }
   .input-row {
     display: flex;
     gap: 10px;
   }
-  input[type="text"] {
+  input[type="text"], input[type="password"] {
     flex: 1;
     padding: 12px 14px;
     border: 1px solid #d1d5db;
@@ -48,8 +58,17 @@
     outline: none;
     transition: border-color 0.2s;
   }
-  input[type="text"]:focus {
+  input[type="text"]:focus, input[type="password"]:focus {
     border-color: #4f46e5;
+  }
+  .notice {
+    background: #fef3c7;
+    color: #92400e;
+    border: 1px solid #fcd34d;
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 14px;
+    margin-bottom: 16px;
   }
   button {
     padding: 12px 22px;
@@ -60,12 +79,90 @@
     font-size: 15px;
     cursor: pointer;
     transition: background 0.2s;
+    white-space: nowrap;
   }
   button:hover { background: #4338ca; }
   button:disabled {
     background: #9ca3af;
     cursor: not-allowed;
   }
+  button.ghost {
+    background: #fff;
+    color: #dc2626;
+    border: 1px solid #fecaca;
+    padding: 6px 12px;
+    font-size: 13px;
+    border-radius: 6px;
+  }
+  button.ghost:hover { background: #fef2f2; }
+  button.danger {
+    background: #fee2e2;
+    color: #b91c1c;
+    padding: 6px 14px;
+    font-size: 13px;
+    border-radius: 6px;
+  }
+  button.danger:hover { background: #fecaca; }
+
+  /* 上传区 */
+  .dropzone {
+    border: 2px dashed #d1d5db;
+    border-radius: 10px;
+    padding: 26px 16px;
+    text-align: center;
+    color: #6b7280;
+    font-size: 14px;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+  }
+  .dropzone:hover { border-color: #a5b4fc; background: #fafaff; }
+  .dropzone.dragover {
+    border-color: #4f46e5;
+    background: #eef2ff;
+    color: #4f46e5;
+  }
+  .dropzone.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .dropzone.disabled:hover {
+    border-color: #d1d5db;
+    background: #fff;
+  }
+  .dropzone .hint {
+    display: block;
+    font-size: 12px;
+    margin-top: 6px;
+    color: #9ca3af;
+  }
+
+  /* 文件列表 */
+  .file-list { list-style: none; }
+  .file-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid #f0f0f0;
+    font-size: 14px;
+  }
+  .file-item:last-child { border-bottom: none; }
+  .file-name {
+    flex: 1;
+    word-break: break-all;
+    font-weight: 500;
+  }
+  .file-meta {
+    color: #9ca3af;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  .empty {
+    color: #9ca3af;
+    font-size: 14px;
+    padding: 6px 0;
+  }
+
   .examples {
     margin-top: 10px;
     font-size: 13px;
@@ -112,15 +209,49 @@
     margin-top: 8px;
     min-height: 18px;
   }
-  .error {
-    color: #dc2626;
-  }
+  .status.error { color: #dc2626; }
+  .status.ok { color: #16a34a; }
 </style>
 </head>
 <body>
 <div class="container">
+  <div class="notice" id="keyNotice" style="display:none;">请先输入智谱 API Key</div>
+
   <h1>AI 知识库</h1>
-  <div class="subtitle">基于 RAG 的问答，只回答知识库里的内容</div>
+  <div class="subtitle">上传你的文档，然后开始提问</div>
+
+  <div class="card">
+    <div class="card-head">
+      <div class="card-title">智谱 API Key</div>
+    </div>
+    <div class="input-row">
+      <input type="password" id="keyInput" placeholder="粘贴你的智谱 API Key" autocomplete="off">
+      <button id="saveKeyBtn">保存</button>
+    </div>
+    <div class="status" id="keyStatus"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <div class="card-title">上传文档</div>
+    </div>
+    <div class="dropzone" id="dropzone">
+      点击选择文件，或把文件拖到这里
+      <span class="hint">只支持 .txt 和 .md</span>
+    </div>
+    <input type="file" id="fileInput" accept=".txt,.md" hidden>
+    <div class="status" id="uploadStatus"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <div class="card-title">已上传文件</div>
+      <button class="danger" id="clearBtn">清空知识库</button>
+    </div>
+    <ul class="file-list" id="fileList"></ul>
+    <div class="empty" id="fileListEmpty">还没有上传文件</div>
+    <div class="status" id="listStatus"></div>
+  </div>
 
   <div class="card">
     <div class="input-row">
@@ -143,6 +274,14 @@
 </div>
 
 <script>
+  const dropzone = document.getElementById('dropzone');
+  const fileInput = document.getElementById('fileInput');
+  const uploadStatus = document.getElementById('uploadStatus');
+  const fileList = document.getElementById('fileList');
+  const fileListEmpty = document.getElementById('fileListEmpty');
+  const listStatus = document.getElementById('listStatus');
+  const clearBtn = document.getElementById('clearBtn');
+
   const input = document.getElementById('question');
   const btn = document.getElementById('askBtn');
   const status = document.getElementById('status');
@@ -150,25 +289,269 @@
   const answerEl = document.getElementById('answer');
   const sourcesEl = document.getElementById('sources');
 
+  const keyInput = document.getElementById('keyInput');
+  const saveKeyBtn = document.getElementById('saveKeyBtn');
+  const keyStatus = document.getElementById('keyStatus');
+  const keyNotice = document.getElementById('keyNotice');
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+  }
+
+  function showStatus(el, msg, kind) {
+    el.textContent = msg;
+    el.classList.remove('error', 'ok');
+    if (kind) el.classList.add(kind);
+  }
+
+  // 后端返回的错误信息在 detail 里，尽量把它显示出来
+  async function readError(res) {
+    try {
+      const data = await res.json();
+      if (data && data.detail) return data.detail;
+    } catch (e) { /* 不是 JSON，忽略 */ }
+    return 'HTTP ' + res.status;
+  }
+
+  // 把后端的报错翻成人话
+  function friendly(status, detail) {
+    if (status === 401 && detail.indexOf('API Key 无效') >= 0) return 'API Key 无效，请检查';
+    return detail;
+  }
+
+  function fmtSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    return (bytes / 1024).toFixed(1) + ' KB';
+  }
+
+  // ---------- API Key ----------
+  // Key 只存在浏览器 localStorage 里，每次请求放在 X-Zhipu-Key 头上，
+  // 后端不落盘。页面上除了"前 4 位"之外不再显示完整的 Key。
+
+  const KEY_STORAGE = 'zhipu_api_key';
+  let apiKey = '';
+
+  function loadStoredKey() {
+    try { return localStorage.getItem(KEY_STORAGE) || ''; } catch (e) { return ''; }
+  }
+
+  function storeKey(k) {
+    try { localStorage.setItem(KEY_STORAGE, k); } catch (e) { /* 无痕模式可能写不进去 */ }
+  }
+
+  function maskKey(k) {
+    return k.slice(0, 4) + '...';
+  }
+
+  // 所有请求都走这里，统一带上 Key
+  function apiFetch(url, options) {
+    const opts = Object.assign({}, options || {});
+    opts.headers = Object.assign({}, opts.headers || {});
+    if (apiKey) opts.headers['X-Zhipu-Key'] = apiKey;
+    return fetch(url, opts);
+  }
+
+  function applyKeyState() {
+    const has = !!apiKey;
+
+    keyNotice.style.display = has ? 'none' : 'block';
+    btn.disabled = !has;
+    dropzone.classList.toggle('disabled', !has);
+    fileInput.disabled = !has;
+
+    if (has) {
+      showStatus(keyStatus, '已保存 Key（前4位：' + maskKey(apiKey) + '）', 'ok');
+    } else {
+      showStatus(keyStatus, '还没有填 Key，上传和提问都不能用', 'error');
+    }
+  }
+
+  function saveKeyFromInput() {
+    const k = keyInput.value.trim();
+    if (!k) {
+      showStatus(keyStatus, '请先输入智谱 API Key', 'error');
+      return;
+    }
+    apiKey = k;
+    storeKey(k);
+    applyKeyState();
+    showStatus(uploadStatus, '');
+    loadFiles();
+  }
+
+  saveKeyBtn.addEventListener('click', saveKeyFromInput);
+  keyInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') saveKeyFromInput();
+  });
+
+  // ---------- 文件列表 ----------
+
+  async function loadFiles() {
+    try {
+      const res = await apiFetch('/files');
+      if (!res.ok) throw new Error(await readError(res));
+      const data = await res.json();
+      renderFiles(data.files || []);
+    } catch (e) {
+      showStatus(listStatus, '加载文件列表失败：' + e.message, 'error');
+    }
+  }
+
+  function renderFiles(files) {
+    fileList.innerHTML = '';
+    fileListEmpty.style.display = files.length ? 'none' : 'block';
+
+    files.forEach(f => {
+      const li = document.createElement('li');
+      li.className = 'file-item';
+      li.innerHTML =
+        '<span class="file-name">' + escapeHtml(f.filename) + '</span>' +
+        '<span class="file-meta">' + fmtSize(f.size) + ' · ' + escapeHtml(f.upload_time) + '</span>' +
+        '<button class="ghost">删除</button>';
+      li.querySelector('button').addEventListener('click', () => deleteFile(f.filename));
+      fileList.appendChild(li);
+    });
+  }
+
+  async function refreshList() {
+    await loadFiles();
+  }
+
+  // ---------- 上传 ----------
+
+  const ALLOWED = ['.txt', '.md'];
+
+  function checkExt(name) {
+    const lower = name.toLowerCase();
+    return ALLOWED.some(ext => lower.endsWith(ext));
+  }
+
+  async function uploadFile(file) {
+    if (!apiKey) {
+      showStatus(uploadStatus, '请先输入智谱 API Key', 'error');
+      return;
+    }
+    if (!checkExt(file.name)) {
+      showStatus(uploadStatus, '只支持 .txt 和 .md 文件，这个上传不了：' + file.name, 'error');
+      return;
+    }
+
+    const size = fmtSize(file.size);
+    showStatus(uploadStatus, `上传中……（${file.name}，${size}）大文件要等一会儿，别关页面`);
+    try {
+      // 直接把 File 对象塞进 FormData 发给后端，
+      // 不用 FileReader 把整个文件读成字符串——那样大文件会把浏览器内存撑爆。
+      const form = new FormData();
+      form.append('file', file);
+
+      const res = await apiFetch('/upload', { method: 'POST', body: form });
+      if (!res.ok) throw new Error(friendly(res.status, await readError(res)));
+
+      const data = await res.json();
+      showStatus(uploadStatus, `上传成功：${data.filename}（${size}，切成 ${data.chunks} 块）`, 'ok');
+      await refreshList();
+    } catch (e) {
+      showStatus(uploadStatus, '上传失败：' + e.message, 'error');
+    }
+  }
+
+  dropzone.addEventListener('click', () => {
+    if (!apiKey) {
+      showStatus(uploadStatus, '请先输入智谱 API Key', 'error');
+      return;
+    }
+    fileInput.click();
+  });
+
+  fileInput.addEventListener('change', () => {
+    const file = fileInput.files[0];
+    if (file) uploadFile(file);
+    fileInput.value = '';   // 允许连续上传同一个文件
+  });
+
+  ['dragenter', 'dragover'].forEach(evt =>
+    dropzone.addEventListener(evt, e => {
+      e.preventDefault();
+      dropzone.classList.add('dragover');
+    })
+  );
+
+  ['dragleave', 'drop'].forEach(evt =>
+    dropzone.addEventListener(evt, e => {
+      e.preventDefault();
+      dropzone.classList.remove('dragover');
+    })
+  );
+
+  dropzone.addEventListener('drop', e => {
+    if (!apiKey) {
+      showStatus(uploadStatus, '请先输入智谱 API Key', 'error');
+      return;
+    }
+    const file = e.dataTransfer.files[0];
+    if (file) uploadFile(file);
+  });
+
+  // ---------- 删除 / 清空 ----------
+
+  async function deleteFile(filename) {
+    if (!confirm(`确定删除 ${filename} 吗？`)) return;
+
+    showStatus(listStatus, '删除中……');
+    try {
+      const res = await apiFetch('/files/' + encodeURIComponent(filename), { method: 'DELETE' });
+      if (!res.ok) throw new Error(friendly(res.status, await readError(res)));
+
+      const data = await res.json();
+      showStatus(listStatus, data.message || '已删除', 'ok');
+      await refreshList();
+    } catch (e) {
+      showStatus(listStatus, '删除失败：' + e.message, 'error');
+    }
+  }
+
+  clearBtn.addEventListener('click', async () => {
+    if (!confirm('确定清空知识库吗？所有文件和向量都会被删除，且不可恢复。')) return;
+
+    showStatus(listStatus, '清空中……');
+    try {
+      const res = await apiFetch('/files', { method: 'DELETE' });
+      if (!res.ok) throw new Error(friendly(res.status, await readError(res)));
+
+      const data = await res.json();
+      showStatus(listStatus, data.message || '知识库已清空', 'ok');
+      await refreshList();
+    } catch (e) {
+      showStatus(listStatus, '清空失败：' + e.message, 'error');
+    }
+  });
+
+  // ---------- 问答 ----------
+
   async function ask() {
+    if (!apiKey) {
+      showStatus(status, '请先输入智谱 API Key', 'error');
+      return;
+    }
+
     const q = input.value.trim();
     if (!q) return;
 
     btn.disabled = true;
-    status.textContent = '正在思考……';
-    status.classList.remove('error');
+    showStatus(status, '正在思考……');
     resultCard.style.display = 'none';
 
     try {
-      const res = await fetch('/ask', {
+      const res = await apiFetch('/ask', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ question: q })
       });
 
       if (!res.ok) {
-        const err = await res.text();
-        throw new Error(err);
+        throw new Error(friendly(res.status, await readError(res)));
       }
 
       const data = await res.json();
@@ -184,19 +567,13 @@
       }
 
       resultCard.style.display = 'block';
-      status.textContent = '';
+      showStatus(status, '');
     } catch (e) {
-      status.textContent = '出错了：' + e.message;
-      status.classList.add('error');
+      showStatus(status, '出错了：' + e.message, 'error');
     } finally {
-      btn.disabled = false;
+      // 没 Key 的时候按钮要保持禁用，别被这里重新点亮
+      btn.disabled = !apiKey;
     }
-  }
-
-  function escapeHtml(s) {
-    return s.replace(/[&<>"']/g, c => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-    }[c]));
   }
 
   btn.addEventListener('click', ask);
@@ -210,6 +587,12 @@
       ask();
     });
   });
+
+  // 启动：读回上次存的 Key → 填进输入框 → 定好按钮能不能点 → 拉文件列表
+  apiKey = loadStoredKey();
+  if (apiKey) keyInput.value = apiKey;
+  applyKeyState();
+  loadFiles();
 </script>
 </body>
 </html>
