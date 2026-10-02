@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI知识库</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: #f5f7fa;
+    color: #1f2937;
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    padding: 40px 16px;
+  }
+  .container {
+    width: 100%;
+    max-width: 720px;
+  }
+  h1 {
+    font-size: 22px;
+    margin-bottom: 8px;
+  }
+  .subtitle {
+    font-size: 13px;
+    color: #6b7280;
+    margin-bottom: 24px;
+  }
+  .card {
+    background: #fff;
+    border-radius: 12px;
+    padding: 20px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    margin-bottom: 16px;
+  }
+  .input-row {
+    display: flex;
+    gap: 10px;
+  }
+  input[type="text"] {
+    flex: 1;
+    padding: 12px 14px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    font-size: 15px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  input[type="text"]:focus {
+    border-color: #4f46e5;
+  }
+  button {
+    padding: 12px 22px;
+    background: #4f46e5;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 15px;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  button:hover { background: #4338ca; }
+  button:disabled {
+    background: #9ca3af;
+    cursor: not-allowed;
+  }
+  .examples {
+    margin-top: 10px;
+    font-size: 13px;
+    color: #6b7280;
+  }
+  .examples span {
+    display: inline-block;
+    background: #eef2ff;
+    color: #4f46e5;
+    padding: 4px 10px;
+    border-radius: 20px;
+    margin: 4px 6px 0 0;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  .examples span:hover { background: #e0e7ff; }
+  .answer {
+    margin-top: 16px;
+    line-height: 1.7;
+    font-size: 15px;
+    white-space: pre-wrap;
+  }
+  .sources {
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid #f0f0f0;
+    font-size: 13px;
+    color: #6b7280;
+  }
+  .sources ul {
+    list-style: none;
+    margin-top: 8px;
+  }
+  .sources li {
+    background: #f9fafb;
+    padding: 8px 12px;
+    border-radius: 6px;
+    margin-bottom: 6px;
+    line-height: 1.5;
+  }
+  .status {
+    font-size: 13px;
+    color: #9ca3af;
+    margin-top: 8px;
+    min-height: 18px;
+  }
+  .error {
+    color: #dc2626;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>AI 知识库</h1>
+  <div class="subtitle">基于 RAG 的问答，只回答知识库里的内容</div>
+
+  <div class="card">
+    <div class="input-row">
+      <input type="text" id="question" placeholder="输入你的问题……" autocomplete="off">
+      <button id="askBtn">提问</button>
+    </div>
+    <div class="examples">
+      试试：
+      <span data-q="什么是RAG">什么是RAG</span>
+      <span data-q="怎么让AI不乱编">怎么让AI不乱编</span>
+      <span data-q="今天天气怎么样">今天天气怎么样</span>
+    </div>
+    <div class="status" id="status"></div>
+  </div>
+
+  <div class="card" id="resultCard" style="display:none;">
+    <div class="answer" id="answer"></div>
+    <div class="sources" id="sources"></div>
+  </div>
+</div>
+
+<script>
+  const input = document.getElementById('question');
+  const btn = document.getElementById('askBtn');
+  const status = document.getElementById('status');
+  const resultCard = document.getElementById('resultCard');
+  const answerEl = document.getElementById('answer');
+  const sourcesEl = document.getElementById('sources');
+
+  async function ask() {
+    const q = input.value.trim();
+    if (!q) return;
+
+    btn.disabled = true;
+    status.textContent = '正在思考……';
+    status.classList.remove('error');
+    resultCard.style.display = 'none';
+
+    try {
+      const res = await fetch('/ask', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: q })
+      });
+
+      if (!res.ok) {
+        const err = await res.text();
+        throw new Error(err);
+      }
+
+      const data = await res.json();
+
+      answerEl.textContent = data.answer || '（无回答）';
+
+      if (data.sources && data.sources.length > 0) {
+        sourcesEl.innerHTML = '来源：<ul>' +
+          data.sources.map(s => `<li>${escapeHtml(s)}</li>`).join('') +
+          '</ul>';
+      } else {
+        sourcesEl.textContent = '无相关来源';
+      }
+
+      resultCard.style.display = 'block';
+      status.textContent = '';
+    } catch (e) {
+      status.textContent = '出错了：' + e.message;
+      status.classList.add('error');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+  }
+
+  btn.addEventListener('click', ask);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') ask();
+  });
+
+  document.querySelectorAll('.examples span').forEach(el => {
+    el.addEventListener('click', () => {
+      input.value = el.dataset.q;
+      ask();
+    });
+  });
+</script>
+</body>
+</html>
