@@ -1,12 +1,10 @@
+# SPDX-License-Identifier: MIT
+
 """首次初始化：把 data/knowledge/notes.txt 作为种子数据入库。
 
 以前这里是"读死路径的 notes.txt 自己入库"，
 现在只保留一层薄封装，真正的切分和入库逻辑都在 ingest.py 里，
 和网页上传走的是同一套代码。
-
-Key 现在不再放 .env，跑这个脚本时会让你在命令行里输一次。
-
-平时用网页上传就够了，这个文件留着做兼容 / 首次初始化。
 """
 
 import getpass

@@ -1,7 +1,9 @@
+# SPDX-License-Identifier: MIT
+
 """RAG 链：检索 + 生成。
 
 全部走智谱：Embedding 用 embedding-2，生成回答用 glm。
-Key 由调用方（网页上用户填的那把）传进来，这里既不读 .env，也不保存。
+Key 由调用方（网页上用户填的那把）传进来.
 """
 
 import hashlib

@@ -1,8 +1,6 @@
-"""单独测试向量检索。
+# SPDX-License-Identifier: MIT
 
-Key 现在不放 .env，跑的时候在命令行里输一次。
-注意：检索用的 Key 必须和当初入库用的是同一把，否则结果没有意义。
-"""
+"""单独测试向量检索。"""
 
 import getpass
 

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+
 """上传文件的入库处理：读取 → 切分 → 打 metadata → 分批存入 Chroma。
 
 main.py（上传接口）和 vector.py（首次初始化种子数据）都调用这里的公共函数。

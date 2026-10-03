@@ -1,6 +1,7 @@
+# SPDX-License-Identifier: MIT
+
 """智谱 Embedding 封装，供 LangChain 使用。
 
-Key 不再从 .env 读，由调用方传进来（网页上用户自己填的那把）。
 这里只持有这一个请求用到的 Key，不落盘、不写日志。
 """
 
