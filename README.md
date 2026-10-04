@@ -6,15 +6,22 @@
 Embedding 和生成回答都用智谱（`embedding-2` + `glm-4-flash`），一把 Key 搞定。  
 **API Key 不放在后端**，由你在网页上输入，存在浏览器里。
 
+```mermaid
 flowchart LR
-  U[浏览器<br/>localStorage 存 Key] -->|X-Zhipu-Key| F[FastAPI]
-  F --> R[rag.py<br/>检索+生成]
-  R --> C[(Chroma)]
-  R --> Z[智谱<br/>embedding-2 + glm-4-flash]
-  I[ingest.py] --> C
+  U["浏览器<br/>localStorage 存 Key"]
+  F["FastAPI<br/>main.py"]
+  R["rag.py<br/>检索 + 生成"]
+  I["ingest.py<br/>入库"]
+  C[("Chroma<br/>向量库")]
+  Z["智谱 API<br/>embedding-2 + glm-4-flash"]
+
+  U -- "X-Zhipu-Key" --> F
+  F --> R
   F --> I
-
-
+  R --> C
+  R --> Z
+  I --> C
+```
 
 ![主页页面](assets/网页主页页面展示.png)
 
