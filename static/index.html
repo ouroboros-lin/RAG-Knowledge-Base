@@ -136,6 +136,43 @@
     color: #9ca3af;
   }
 
+  /* 粘贴文本 */
+  textarea {
+    width: 100%;
+    min-height: 110px;
+    margin-top: 10px;
+    padding: 12px 14px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    font-size: 14px;
+    font-family: inherit;
+    line-height: 1.6;
+    resize: vertical;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  textarea:focus { border-color: #4f46e5; }
+  button.mini {
+    background: #fff;
+    color: #4f46e5;
+    border: 1px solid #e0e7ff;
+    padding: 6px 12px;
+    font-size: 13px;
+    border-radius: 6px;
+  }
+  button.mini:hover { background: #eef2ff; }
+  .switch {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 10px;
+    font-size: 13px;
+    color: #6b7280;
+    cursor: pointer;
+    user-select: none;
+  }
+  .switch input { cursor: pointer; }
+
   /* 文件列表 */
   .file-list { list-style: none; }
   .file-item {
@@ -245,6 +282,20 @@
 
   <div class="card">
     <div class="card-head">
+      <div class="card-title">粘贴文本入库</div>
+    </div>
+    <div class="input-row">
+      <input type="text" id="pasteTitle" placeholder="给这段文字起个名字（可留空）" autocomplete="off">
+    </div>
+    <textarea id="pasteText" placeholder="把要入库的文本粘到这里，点「入库」……"></textarea>
+    <div class="input-row" style="margin-top:10px;">
+      <button id="pasteBtn">入库</button>
+    </div>
+    <div class="status" id="pasteStatus"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
       <div class="card-title">已上传文件</div>
       <button class="danger" id="clearBtn">清空知识库</button>
     </div>
@@ -254,6 +305,10 @@
   </div>
 
   <div class="card">
+    <div class="card-head">
+      <div class="card-title">提问</div>
+      <button class="mini" id="newChatBtn">新对话（清空上下文）</button>
+    </div>
     <div class="input-row">
       <input type="text" id="question" placeholder="输入你的问题……" autocomplete="off">
       <button id="askBtn">提问</button>
@@ -264,6 +319,10 @@
       <span data-q="怎么让AI不乱编">怎么让AI不乱编</span>
       <span data-q="今天天气怎么样">今天天气怎么样</span>
     </div>
+    <label class="switch">
+      <input type="checkbox" id="streamToggle" checked>
+      流式输出（一个字一个字往外冒，关掉就走原来的 /ask）
+    </label>
     <div class="status" id="status"></div>
   </div>
 
@@ -288,6 +347,13 @@
   const resultCard = document.getElementById('resultCard');
   const answerEl = document.getElementById('answer');
   const sourcesEl = document.getElementById('sources');
+  const streamToggle = document.getElementById('streamToggle');
+  const newChatBtn = document.getElementById('newChatBtn');
+
+  const pasteTitle = document.getElementById('pasteTitle');
+  const pasteText = document.getElementById('pasteText');
+  const pasteBtn = document.getElementById('pasteBtn');
+  const pasteStatus = document.getElementById('pasteStatus');
 
   const keyInput = document.getElementById('keyInput');
   const saveKeyBtn = document.getElementById('saveKeyBtn');
@@ -358,6 +424,7 @@
 
     keyNotice.style.display = has ? 'none' : 'block';
     btn.disabled = !has;
+    pasteBtn.disabled = !has;
     dropzone.classList.toggle('disabled', !has);
     fileInput.disabled = !has;
 
@@ -494,6 +561,44 @@
     if (file) uploadFile(file);
   });
 
+  // ---------- 粘贴文本入库 ----------
+  // 走的还是后端同一套入库逻辑，文本会先落成 data/uploads/ 里的一个 .txt，
+  // 所以它和上传的文件一样，能在文件列表里看到、也能删掉。
+
+  async function ingestText() {
+    if (!apiKey) {
+      showStatus(pasteStatus, '请先输入智谱 API Key', 'error');
+      return;
+    }
+    const text = pasteText.value.trim();
+    if (!text) {
+      showStatus(pasteStatus, '先把文本粘进来', 'error');
+      return;
+    }
+
+    pasteBtn.disabled = true;
+    showStatus(pasteStatus, '入库中……文本越长越慢，别关页面');
+    try {
+      const res = await apiFetch('/ingest_text', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: pasteTitle.value.trim(), text })
+      });
+      if (!res.ok) throw new Error(friendly(res.status, await readError(res)));
+
+      const data = await res.json();
+      pasteText.value = '';
+      showStatus(pasteStatus, `已入库：${data.filename}（切成 ${data.chunks} 块）`, 'ok');
+      await refreshList();
+    } catch (e) {
+      showStatus(pasteStatus, '入库失败：' + e.message, 'error');
+    } finally {
+      pasteBtn.disabled = !apiKey;
+    }
+  }
+
+  pasteBtn.addEventListener('click', ingestText);
+
   // ---------- 删除 / 清空 ----------
 
   async function deleteFile(filename) {
@@ -529,6 +634,75 @@
   });
 
   // ---------- 问答 ----------
+  // 多轮上下文：每问一次就把「问题 + 回答」攒进 history，下一次一起发给后端。
+  // 后端还会再截一次，这里只是别让数组无限长。点「新对话」清空。
+
+  const HISTORY_KEEP = 10;   // 最多留 10 条消息，也就是 5 轮
+  let history = [];
+
+  function pushHistory(role, content) {
+    history.push({ role, content });
+    if (history.length > HISTORY_KEEP) history = history.slice(-HISTORY_KEEP);
+  }
+
+  function renderSources(sources) {
+    if (sources && sources.length > 0) {
+      sourcesEl.innerHTML = '来源：<ul>' +
+        sources.map(s => `<li>${escapeHtml(s)}</li>`).join('') +
+        '</ul>';
+    } else {
+      sourcesEl.textContent = '无相关来源';
+    }
+  }
+
+  // 流式：后端发的是 SSE，一条消息一个 JSON，直接用 fetch 读 body 就行
+  async function askStreaming(q) {
+    const res = await apiFetch('/ask/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: q, history })
+    });
+    if (!res.ok) throw new Error(friendly(res.status, await readError(res)));
+
+    resultCard.style.display = 'block';
+    answerEl.textContent = '';
+    sourcesEl.textContent = '';
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+    let answer = '';
+    let failed = null;
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // SSE 一条消息以空行结束
+      const blocks = buffer.split('\n\n');
+      buffer = blocks.pop();
+
+      for (const block of blocks) {
+        const line = block.split('\n').find(l => l.startsWith('data:'));
+        if (!line) continue;
+        let msg;
+        try { msg = JSON.parse(line.slice(5).trim()); } catch (e) { continue; }
+
+        if (msg.type === 'sources') {
+          renderSources(msg.sources);
+        } else if (msg.type === 'delta') {
+          answer += msg.text;
+          answerEl.textContent = answer;
+        } else if (msg.type === 'error') {
+          failed = msg.detail;
+        }
+      }
+    }
+
+    if (failed) throw new Error(failed);
+    return answer;
+  }
 
   async function ask() {
     if (!apiKey) {
@@ -542,32 +716,33 @@
     btn.disabled = true;
     showStatus(status, '正在思考……');
     resultCard.style.display = 'none';
+    const started = performance.now();
 
     try {
-      const res = await apiFetch('/ask', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: q })
-      });
+      let answer;
 
-      if (!res.ok) {
-        throw new Error(friendly(res.status, await readError(res)));
-      }
-
-      const data = await res.json();
-
-      answerEl.textContent = data.answer || '（无回答）';
-
-      if (data.sources && data.sources.length > 0) {
-        sourcesEl.innerHTML = '来源：<ul>' +
-          data.sources.map(s => `<li>${escapeHtml(s)}</li>`).join('') +
-          '</ul>';
+      if (streamToggle.checked) {
+        answer = await askStreaming(q);
       } else {
-        sourcesEl.textContent = '无相关来源';
+        const res = await apiFetch('/ask', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question: q, history })
+        });
+        if (!res.ok) throw new Error(friendly(res.status, await readError(res)));
+
+        const data = await res.json();
+        answer = data.answer || '（无回答）';
+        answerEl.textContent = answer;
+        renderSources(data.sources);
+        resultCard.style.display = 'block';
       }
 
-      resultCard.style.display = 'block';
-      showStatus(status, '');
+      pushHistory('user', q);
+      pushHistory('assistant', answer);
+
+      const seconds = ((performance.now() - started) / 1000).toFixed(1);
+      showStatus(status, `完成，耗时 ${seconds} 秒`, 'ok');
     } catch (e) {
       showStatus(status, '出错了：' + e.message, 'error');
     } finally {
@@ -575,6 +750,12 @@
       btn.disabled = !apiKey;
     }
   }
+
+  newChatBtn.addEventListener('click', () => {
+    history = [];
+    resultCard.style.display = 'none';
+    showStatus(status, '已开始新对话，之前的上下文清掉了', 'ok');
+  });
 
   btn.addEventListener('click', ask);
   input.addEventListener('keydown', e => {
