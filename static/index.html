@@ -4,6 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AI知识库</title>
+<!-- 把回答里的 Markdown 转成 HTML。marked 自己不再做净化（sanitize 选项已废弃移除），
+     所以后面的 HTML 一定再过一遍 DOMPurify 才塞进页面。 -->
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -161,6 +165,12 @@
     border-radius: 6px;
   }
   button.mini:hover { background: #eef2ff; }
+  /* 回答下面的两个操作按钮，空回答时整行隐藏（display 由 JS 切） */
+  .answer-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+  }
   .switch {
     display: flex;
     align-items: center;
@@ -220,8 +230,91 @@
     margin-top: 16px;
     line-height: 1.7;
     font-size: 15px;
-    white-space: pre-wrap;
+    word-break: break-word;
   }
+  /* 流式期间还没渲染 Markdown，先按纯文本显示，得保留换行 */
+  .answer.plain { white-space: pre-wrap; }
+
+  /* ---------- 回答里的 Markdown 排版 ---------- */
+  .answer > *:first-child { margin-top: 0; }
+  .answer > *:last-child { margin-bottom: 0; }
+
+  .answer h1, .answer h2, .answer h3 {
+    margin: 20px 0 10px;
+    line-height: 1.4;
+    font-weight: 600;
+  }
+  .answer h1 {
+    font-size: 20px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid #f0f0f0;
+  }
+  .answer h2 { font-size: 17px; }
+  .answer h3 { font-size: 15px; color: #374151; }
+
+  .answer p { margin: 10px 0; }
+
+  .answer ul, .answer ol {
+    margin: 10px 0;
+    padding-left: 26px;
+  }
+  .answer ul { list-style: disc; }
+  .answer ol { list-style: decimal; }
+  .answer li { margin: 4px 0; }
+  .answer li > ul, .answer li > ol { margin: 4px 0; }
+
+  .answer code {
+    font-family: "SFMono-Regular", Menlo, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 0.9em;
+    background: #f3f4f6;
+    color: #b91c1c;
+    padding: 2px 5px;
+    border-radius: 4px;
+  }
+  .answer pre {
+    margin: 12px 0;
+    padding: 12px 14px;
+    background: #f6f8fa;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    overflow-x: auto;
+  }
+  .answer pre code {
+    background: none;
+    color: #1f2937;
+    padding: 0;
+    border-radius: 0;
+    font-size: 13px;
+    line-height: 1.6;
+    white-space: pre;
+  }
+
+  .answer blockquote {
+    margin: 12px 0;
+    padding: 2px 0 2px 12px;
+    border-left: 3px solid #d1d5db;
+    color: #6b7280;
+  }
+  .answer blockquote p { margin: 4px 0; }
+
+  .answer a { color: #4f46e5; }
+  .answer hr {
+    margin: 18px 0;
+    border: none;
+    border-top: 1px solid #e5e7eb;
+  }
+  .answer table {
+    margin: 12px 0;
+    border-collapse: collapse;
+    font-size: 14px;
+  }
+  .answer th, .answer td {
+    border: 1px solid #e5e7eb;
+    padding: 6px 10px;
+    text-align: left;
+  }
+  .answer th { background: #f9fafb; font-weight: 600; }
+  .answer img { max-width: 100%; }
   .sources {
     margin-top: 16px;
     padding-top: 14px;
@@ -239,6 +332,16 @@
     border-radius: 6px;
     margin-bottom: 6px;
     line-height: 1.5;
+  }
+  /* 来源：[1] 文件名 · 第 N 块 · 相似度 0.82 */
+  .sources .src-head {
+    font-weight: 500;
+    color: #4b5563;
+    margin-bottom: 4px;
+  }
+  .sources .src-text {
+    color: #6b7280;
+    word-break: break-word;
   }
   .status {
     font-size: 13px;
@@ -328,6 +431,10 @@
 
   <div class="card" id="resultCard" style="display:none;">
     <div class="answer" id="answer"></div>
+    <div class="answer-actions" id="answerActions" style="display:none;">
+      <button class="mini" id="copyBtn">复制回答</button>
+      <button class="mini" id="regenBtn">重新生成</button>
+    </div>
     <div class="sources" id="sources"></div>
   </div>
 </div>
@@ -349,6 +456,9 @@
   const sourcesEl = document.getElementById('sources');
   const streamToggle = document.getElementById('streamToggle');
   const newChatBtn = document.getElementById('newChatBtn');
+  const answerActions = document.getElementById('answerActions');
+  const copyBtn = document.getElementById('copyBtn');
+  const regenBtn = document.getElementById('regenBtn');
 
   const pasteTitle = document.getElementById('pasteTitle');
   const pasteText = document.getElementById('pasteText');
@@ -645,11 +755,59 @@
     if (history.length > HISTORY_KEEP) history = history.slice(-HISTORY_KEEP);
   }
 
+  // 把回答里的 Markdown 渲染成 HTML。
+  // 顺序不能反：先 marked 转 HTML，再 DOMPurify 净化，最后才 innerHTML。
+  // marked 从 v5 起就把 sanitize 选项删掉了（官方说它不安全，改用 DOMPurify），
+  // 所以这里只留一条通往 innerHTML 的路，而且必经 DOMPurify。
+  function renderMarkdown(text) {
+    const raw = String(text == null ? '' : text);
+
+    // marked 或 DOMPurify 没加载出来（断网、CDN 被墙）时退回纯文本，安全优先
+    if (typeof marked === 'undefined' || typeof DOMPurify === 'undefined') {
+      showPlain(raw);
+      return;
+    }
+
+    let html;
+    try {
+      html = marked.parse(raw, { gfm: true, breaks: true });
+    } catch (e) {
+      showPlain(raw);   // 解析炸了就退回纯文本，总比一片空白强
+      return;
+    }
+
+    answerEl.classList.remove('plain');
+    answerEl.innerHTML = DOMPurify.sanitize(html);
+  }
+
+  // 流式期间用的：纯文本、保留换行，不解析 Markdown
+  function showPlain(text) {
+    answerEl.classList.add('plain');
+    answerEl.textContent = text;
+  }
+
+  // 来源列表。每项的格式（后端给的是 dict）：
+  //   [1] notes.txt · 第 3 块 · 相似度 0.82
+  //       <片段正文>
+  // 相似度是 cosine 相似度（1 - 距离），0~1，越大越相关，这里显示两位小数。
   function renderSources(sources) {
     if (sources && sources.length > 0) {
-      sourcesEl.innerHTML = '来源：<ul>' +
-        sources.map(s => `<li>${escapeHtml(s)}</li>`).join('') +
-        '</ul>';
+      sourcesEl.innerHTML = '来源：<ul>' + sources.map((s, i) => {
+        // 后端老版本给的是纯字符串，别让它把页面搞崩
+        const item = (typeof s === 'string') ? { text: s } : (s || {});
+
+        const score = Number(item.score);
+        const scoreText = isFinite(score) ? score.toFixed(2) : '—';
+        const index = (item.chunk_index === null || item.chunk_index === undefined)
+          ? '?' : item.chunk_index;
+
+        const head = `[${i + 1}] ${escapeHtml(item.source || '未知来源')}` +
+                     ` · 第 ${escapeHtml(String(index))} 块` +
+                     ` · 相似度 ${scoreText}`;
+
+        return '<li><div class="src-head">' + head + '</div>' +
+               `<div class="src-text">${escapeHtml(item.text || '')}</div></li>`;
+      }).join('') + '</ul>';
     } else {
       sourcesEl.textContent = '无相关来源';
     }
@@ -665,7 +823,7 @@
     if (!res.ok) throw new Error(friendly(res.status, await readError(res)));
 
     resultCard.style.display = 'block';
-    answerEl.textContent = '';
+    showPlain('');
     sourcesEl.textContent = '';
 
     const reader = res.body.getReader();
@@ -692,8 +850,10 @@
         if (msg.type === 'sources') {
           renderSources(msg.sources);
         } else if (msg.type === 'delta') {
+          // 流式期间一律纯文本显示：每来一段就 parse 一次的话，
+          // 半截的 Markdown（比如只有 ** 没闭合、代码块还没写完）会一闪一闪的
           answer += msg.text;
-          answerEl.textContent = answer;
+          showPlain(answer);
         } else if (msg.type === 'error') {
           failed = msg.detail;
         }
@@ -701,8 +861,17 @@
     }
 
     if (failed) throw new Error(failed);
+
+    // 收完了，这时候才是完整的一段 Markdown，整体渲染一次
+    renderMarkdown(answer);
     return answer;
   }
+
+  // 上一次问的问题和上一次的回答原文。
+  // 「重新生成」用 lastQuestion 再问一遍；「复制回答」复制的是 lastAnswer——
+  // 是回答的纯文本（原始 Markdown），不是渲染后的 HTML。
+  let lastQuestion = '';
+  let lastAnswer = '';
 
   async function ask() {
     if (!apiKey) {
@@ -713,9 +882,37 @@
     const q = input.value.trim();
     if (!q) return;
 
+    lastQuestion = q;
+    await runAsk(q);
+  }
+
+  // 重新生成：拿上一次的问题再走一遍完整流程（流式开关照旧生效）。
+  // 这不是新的一轮，所以不能让它再往 history 里塞一份：
+  // 先把上一轮的「问 + 答」从尾部退掉，runAsk 里再重新 push 回去，净效果不变。
+  async function regenerate() {
+    if (!lastQuestion) return;
+    rollbackLastTurn();
+    await runAsk(lastQuestion);
+  }
+
+  // 只退我们自己刚 push 进去的那一对，别把别的轮次误删
+  function rollbackLastTurn() {
+    const n = history.length;
+    if (n >= 2 &&
+        history[n - 2].role === 'user' &&
+        history[n - 2].content === lastQuestion &&
+        history[n - 1].role === 'assistant') {
+      history = history.slice(0, -2);
+      return true;
+    }
+    return false;
+  }
+
+  async function runAsk(q) {
     btn.disabled = true;
     showStatus(status, '正在思考……');
     resultCard.style.display = 'none';
+    answerActions.style.display = 'none';
     const started = performance.now();
 
     try {
@@ -733,13 +930,18 @@
 
         const data = await res.json();
         answer = data.answer || '（无回答）';
-        answerEl.textContent = answer;
+        // 非流式：拿到就是完整回答，直接渲染 Markdown
+        renderMarkdown(answer);
         renderSources(data.sources);
         resultCard.style.display = 'block';
       }
 
+      lastAnswer = answer;
       pushHistory('user', q);
       pushHistory('assistant', answer);
+
+      // 有回答才把两个按钮放出来；空回答就保持隐藏
+      answerActions.style.display = answer ? 'flex' : 'none';
 
       const seconds = ((performance.now() - started) / 1000).toFixed(1);
       showStatus(status, `完成，耗时 ${seconds} 秒`, 'ok');
@@ -751,8 +953,72 @@
     }
   }
 
+  // ---------- 复制 / 重新生成 ----------
+
+  const COPY_LABEL = '复制回答';
+  let copyTimer = null;
+
+  function flashCopied() {
+    copyBtn.textContent = '已复制';
+    if (copyTimer) clearTimeout(copyTimer);
+    copyTimer = setTimeout(() => {
+      copyBtn.textContent = COPY_LABEL;
+      copyTimer = null;
+    }, 1500);
+  }
+
+  // 老浏览器 / 非 https 页面没有 navigator.clipboard，退回 textarea + execCommand
+  function copyByTextarea(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    // 挪到视口外，免得页面跳一下
+    ta.style.position = 'fixed';
+    ta.style.top = '-1000px';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, ta.value.length);   // iOS 上光 select() 不够
+
+    let ok = false;
+    try {
+      ok = document.execCommand('copy');
+    } catch (e) {
+      ok = false;
+    }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  async function copyAnswer() {
+    if (!lastAnswer) return;
+
+    let ok = false;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      try {
+        await navigator.clipboard.writeText(lastAnswer);
+        ok = true;
+      } catch (e) {
+        ok = false;   // 没权限、页面失焦等，往下走降级方案
+      }
+    }
+    if (!ok) ok = copyByTextarea(lastAnswer);
+
+    if (ok) {
+      flashCopied();
+    } else {
+      showStatus(status, '复制失败，请手动选中回答复制', 'error');
+    }
+  }
+
+  copyBtn.addEventListener('click', copyAnswer);
+  regenBtn.addEventListener('click', regenerate);
+
   newChatBtn.addEventListener('click', () => {
     history = [];
+    lastQuestion = '';
+    lastAnswer = '';
+    answerActions.style.display = 'none';
     resultCard.style.display = 'none';
     showStatus(status, '已开始新对话，之前的上下文清掉了', 'ok');
   });

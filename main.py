@@ -157,10 +157,20 @@ class AskRequest(BaseModel):
     # 多轮对话上下文，可选。不传就和以前完全一样（单轮问答）。
     history: list[HistoryItem] | None = None
 
+class SourceItem(BaseModel):
+    """一条来源：片段正文 + 出自哪个文件的第几块 + 相似度（0~1，越大越相关）。
+
+    相似度是按 cosine 距离算的：相似度 = 1 - 距离，见 rag.py 顶部的约定。
+    """
+    text: str
+    source: str = ""
+    chunk_index: int | None = None
+    score: float
+
 class AskResponse(BaseModel):
     question: str
     answer: str
-    sources: list[str]
+    sources: list[SourceItem]
 
 class UploadResponse(BaseModel):
     filename: str
@@ -237,7 +247,7 @@ def health():
 # ---------- 问答 ----------
 
 # 3. 保留GET版，方便直接用 curl 测（要带上 X-Zhipu-Key 请求头）
-@app.get("/ask")
+@app.get("/ask", response_model=AskResponse)
 def ask_get(q: str = "", api_key: str = Depends(get_zhipu_key)):
     if not q:
         return {

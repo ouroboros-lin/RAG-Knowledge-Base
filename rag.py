@@ -6,6 +6,22 @@
 Key 由调用方（网页上用户填的那把）传进来.
 
 本文件顶部的常量就是检索/生成相关的全部可调参数，改这里就行。
+
+关于相似度（重要约定）：
+    向量库统一按 **cosine 距离** 建，见 get_vectorstore 里的
+    collection_metadata={"hnsw:space": "cosine"}。
+
+    Chroma 返回的 score 是**距离**不是相似度，越小越相关；cosine 空间下
+        距离 = 1 - 余弦相似度
+    所以本文件里一律用换算后的「相似度」：
+        相似度 = 1 - 距离，裁剪到 0~1，越大越相关。
+    缓存里存的、merge_adjacent 合并时比的、对外返回的 sources 里的 score，
+    全程都是这个相似度，不再出现原始距离。
+
+    注意：这个约定是后加的。**以前建的向量库用的是 Chroma 默认的 l2 空间**，
+    换成 cosine 之后旧向量不会自动重建，`1 - score` 算出来的分数没有意义
+    （l2 下距离可以远大于 1，clamp 之后会一片 0）。所以升级后必须
+    「清空知识库」再用同一把 Key 重新上传。
 """
 
 import hashlib
@@ -116,11 +132,20 @@ def get_vectorstore(api_key: str) -> Chroma:
 
     每次请求现建，Key 只活在这一个请求里：
     不会在模块级别留一份，也不会被下一个请求复用。
+
+    collection_metadata 指定用 cosine 距离——Chroma 默认是 l2，
+    那样 similarity_search_with_score 给出的分数没法换算成 0~1 的相似度。
+
+    注意：metadata 只在**建集合**时生效。集合已经存在的话，
+    get_or_create_collection 会直接把旧的拿回来，这里的设置会被忽略——
+    所以老库必须清空重建（ingest.clear_all 走 reset_collection，
+    删掉再建，会带上这份 metadata）。
     """
     return Chroma(
         persist_directory=CHROMA_DIR,
         collection_name=COLLECTION_NAME,
         embedding_function=ZhipuEmbeddings(api_key=api_key),
+        collection_metadata={"hnsw:space": "cosine"},
     )
 
 
@@ -138,6 +163,9 @@ def count_chunks() -> int:
 #
 # 缓存的是"检索结果"而不是最终回答：回答还跟 history 有关，缓存它容易张冠李戴，
 # 而检索只是查向量库，键就是 (Key 指纹, 问题)，安全得多。
+#
+# 缓存的值是 [(Document, 相似度), ...]——相似度一起存，
+# 不然命中缓存的那次就拿不到分数了（而来源里要显示它）。
 #
 # Key 指纹进缓存键，所以换了 Key 天然命中不到旧缓存；
 # 至于上传 / 删除 / 清空，由 ingest.py 里的写操作直接调 clear_cache()。
@@ -165,17 +193,17 @@ def _cache_get(key: tuple):
         item = _cache.get(key)
         if item is None:
             return None
-        expire_at, docs = item
+        expire_at, pairs = item
         if expire_at < time.time():
             del _cache[key]
             return None
         _cache.move_to_end(key)
-        return docs
+        return pairs
 
 
-def _cache_put(key: tuple, docs: list) -> None:
+def _cache_put(key: tuple, pairs: list) -> None:
     with _cache_lock:
-        _cache[key] = (time.time() + CACHE_TTL_SECONDS, docs)
+        _cache[key] = (time.time() + CACHE_TTL_SECONDS, pairs)
         _cache.move_to_end(key)
         while len(_cache) > CACHE_MAX_SIZE:
             _cache.popitem(last=False)
@@ -198,72 +226,106 @@ def _join_overlap(head: str, tail: str) -> str:
     return head + "\n" + tail
 
 
-def merge_adjacent(docs: list) -> list:
+def merge_adjacent(pairs: list) -> list:
     """去重 + 把同一来源里连续的块拼回去，最多留 TOP_K 条。
 
-    1. 内容完全一样的只留最早出现的那条（相关度最高）；
+    进出的都是 [(Document, 相似度), ...]，相似度 0~1，越大越相关。
+
+    1. 来源和内容都一样的只留相似度最高的那条；
     2. 同一个文件里 chunk_index 是连续的几块，说明本来就是一段话被切开的，
-       拼回一整段，拼的时候把重叠部分去掉；
-    3. 合并后按各自最靠前的相关度重新排，再截到 TOP_K。
+       拼回一整段（拼的时候去掉重叠部分），合并后这条的相似度**取组内最高的**；
+    3. 按相似度从高到低排，再截到 TOP_K。
     """
-    # 去重，顺便复制一份，避免改到缓存 / 调用方的 Document
-    unique = []
-    seen = set()
-    for doc in docs:
+    # 去重，顺便复制一份 Document，避免改到缓存里的对象
+    best: dict[tuple, tuple[float, Document]] = {}
+    for doc, score in pairs:
         mark = (doc.metadata.get("source", ""), doc.page_content)
-        if mark in seen:
-            continue
-        seen.add(mark)
-        unique.append(Document(page_content=doc.page_content,
-                               metadata=dict(doc.metadata)))
+        if mark not in best or score > best[mark][0]:
+            best[mark] = (score, Document(page_content=doc.page_content,
+                                          metadata=dict(doc.metadata)))
 
     # 按来源分组，组内按块序号排好，再合并连续的块
     groups: dict[str, list] = {}
-    for rank, doc in enumerate(unique):
-        groups.setdefault(doc.metadata.get("source", ""), []).append((rank, doc))
+    for score, doc in best.values():
+        groups.setdefault(doc.metadata.get("source", ""), []).append((score, doc))
 
     merged = []
     for items in groups.values():
         items.sort(key=lambda item: _chunk_index(item[1]))
-        best_rank, current = items[0]
+        top_score, current = items[0]
         current_index = _chunk_index(current)
-        for rank, doc in items[1:]:
+        for score, doc in items[1:]:
             index = _chunk_index(doc)
             if index == current_index + 1:
                 current.page_content = _join_overlap(current.page_content,
                                                      doc.page_content)
-                current.metadata["chunk_index"] = index
+                # 合并后的相似度取组内最高的那个；chunk_index 保持第一块的，
+                # 这样来源里显示的「第 N 块」是这段话开头所在的块
+                top_score = max(top_score, score)
                 current_index = index
-                best_rank = min(best_rank, rank)
             else:
-                merged.append((best_rank, current))
-                best_rank, current, current_index = rank, doc, index
-        merged.append((best_rank, current))
+                merged.append((current, top_score))
+                top_score, current, current_index = score, doc, index
+        merged.append((current, top_score))
 
-    merged.sort(key=lambda item: item[0])
-    return [doc for _, doc in merged[:TOP_K]]
+    merged.sort(key=lambda item: item[1], reverse=True)
+    return merged[:TOP_K]
+
+
+def search_with_score(query: str, api_key: str) -> list:
+    """查向量库，返回 [(Document, 相似度), ...]。
+
+    用 similarity_search_with_score 拿到的 score 是**距离**（越小越相关），
+    cosine 空间下 距离 = 1 - 余弦相似度，所以相似度 = 1 - 距离。
+    再 clamp 到 0~1：浮点误差可能让 1.0 变成 1.0000000000000002，
+    而余弦为负的向量算出来会是负数。
+    """
+    hits = get_vectorstore(api_key).similarity_search_with_score(query, k=CANDIDATE_K)
+    return [(doc, _to_similarity(distance)) for doc, distance in hits]
+
+
+def _to_similarity(distance: float) -> float:
+    """cosine 距离 → 相似度，裁剪到 0~1。"""
+    return max(0.0, min(1.0, 1.0 - float(distance)))
 
 
 def retrieve(query: str, api_key: str) -> list:
     """检索相关资料。先看缓存，没命中才真的去查向量库。
 
-    返回的 Document 是共享的，调用方别去改它。
+    返回 [(Document, 相似度), ...]，Document 是共享的，调用方别去改它。
     """
     key = (key_fingerprint(api_key), query.strip())
     cached = _cache_get(key)
     if cached is not None:
         return cached
 
-    docs = get_vectorstore(api_key).similarity_search(query, k=CANDIDATE_K)
-    docs = merge_adjacent(docs)
-    _cache_put(key, docs)
-    return docs
+    pairs = merge_adjacent(search_with_score(query, api_key))
+    _cache_put(key, pairs)
+    return pairs
 
 
 # ---------- 生成 ----------
 
-def format_docs(docs) -> str:
-    return "\n".join(doc.page_content for doc in docs)
+def format_docs(pairs) -> str:
+    """把 [(Document, 相似度), ...] 拼成给 LLM 看的资料文本。"""
+    return "\n".join(doc.page_content for doc, _ in pairs)
+
+
+def source_items(pairs) -> list[dict]:
+    """[(Document, 相似度), ...] → 对外的来源列表。
+
+    每项 {"text": 片段正文, "source": 文件名, "chunk_index": 块序号, "score": 相似度}。
+    score 保留 4 位小数，够用又不至于带出一串浮点尾巴（前端显示两位）。
+    """
+    items = []
+    for doc, score in pairs:
+        items.append({
+            "text": doc.page_content,
+            "source": doc.metadata.get("source", ""),
+            "chunk_index": doc.metadata.get("chunk_index"),
+            "score": round(float(score), 4),
+        })
+    return items
 
 
 def build_llm(api_key: str) -> ChatZhipuAI:
@@ -293,13 +355,13 @@ def format_history(history) -> str:
     return "\n".join(lines)
 
 
-def stream_answer(query: str, docs: list, api_key: str, history=None):
+def stream_answer(query: str, pairs: list, api_key: str, history=None):
     """流式生成回答：一小段一小段地往外吐。"""
     turns = format_history(history)
     template = prompt_with_history if turns else prompt
     chain = template | build_llm(api_key) | StrOutputParser()
 
-    payload = {"context": format_docs(docs), "question": query}
+    payload = {"context": format_docs(pairs), "question": query}
     if turns:
         payload["history"] = turns
 
@@ -310,13 +372,14 @@ def ask(query: str, api_key: str, history=None):
     """检索 + 生成。调用方负责先确认 Key 没换（key_changed）。
 
     history 可以不传，不传时和以前的行为完全一样。
+    sources 是 [{"text", "source", "chunk_index", "score"}, ...]。
     """
-    docs = retrieve(query, api_key)
-    answer = "".join(stream_answer(query, docs, api_key, history))
+    pairs = retrieve(query, api_key)
+    answer = "".join(stream_answer(query, pairs, api_key, history))
 
     return {
         "answer": answer,
-        "sources": [doc.page_content for doc in docs]
+        "sources": source_items(pairs)
     }
 
 
@@ -324,12 +387,12 @@ def ask_stream(query: str, api_key: str, history=None):
     """流式问答。先吐出检索到的来源，再一段段吐回答。
 
     产出的是普通 dict，转成什么协议由调用方决定：
-      {"type": "sources", "sources": [...]}
+      {"type": "sources", "sources": [{"text", "source", "chunk_index", "score"}, ...]}
       {"type": "delta", "text": "..."}
     """
-    docs = retrieve(query, api_key)
-    yield {"type": "sources", "sources": [doc.page_content for doc in docs]}
-    for piece in stream_answer(query, docs, api_key, history):
+    pairs = retrieve(query, api_key)
+    yield {"type": "sources", "sources": source_items(pairs)}
+    for piece in stream_answer(query, pairs, api_key, history):
         yield {"type": "delta", "text": piece}
 
 
@@ -340,4 +403,5 @@ if __name__ == "__main__":
     print("回答：", result["answer"])
     print("来源：")
     for s in result["sources"]:
-        print("-", s)
+        print(f"- {s['source']} 第 {s['chunk_index']} 块 相似度 {s['score']:.2f}")
+        print(f"  {s['text']}")
